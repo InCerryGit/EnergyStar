@@ -1,11 +1,23 @@
-﻿using EnergyStar.Interop;
+﻿using System.Runtime.InteropServices;
+using EnergyStar.Interop;
 
 namespace EnergyStar
 {
     internal class Program
     {
         static CancellationTokenSource cts = new CancellationTokenSource();
-
+        
+        public delegate bool ConsoleCtrlDelegate(int ctrlType);  
+        [DllImport("kernel32.dll")]
+        private static extern bool SetConsoleCtrlHandler(ConsoleCtrlDelegate handlerRoutine, bool add);
+        static bool HandlerRoutine(int ctrlType)
+        {
+            cts.Cancel();
+            HookManager.UnsubscribeWindowEvents();
+            EnergyManager.RecoverAllUserProcesses();
+            return false;
+        }
+        
         static async void HouseKeepingThreadProc()
         {
             Console.WriteLine("House keeping thread started.");
@@ -17,7 +29,7 @@ namespace EnergyStar
                     await houseKeepingTimer.WaitForNextTickAsync(cts.Token);
                     EnergyManager.ThrottleAllUserBackgroundProcesses();
                 }
-                catch (TaskCanceledException)
+                catch (OperationCanceledException)
                 {
                     break;
                 }
@@ -26,6 +38,8 @@ namespace EnergyStar
 
         static void Main(string[] args)
         {
+            SetConsoleCtrlHandler(new ConsoleCtrlDelegate(HandlerRoutine), true);
+            
             // Well, this program only works for Windows Version starting with Cobalt...
             // Nickel or higher will be better, but at least it works in Cobalt
             //
@@ -48,19 +62,10 @@ namespace EnergyStar
             {
                 if (Event.GetMessage(out Win32WindowForegroundMessage msg, IntPtr.Zero, 0, 0))
                 {
-                    if (msg.Message == Event.WM_QUIT)
-                    {
-                        cts.Cancel();
-                        break;
-                    }
-
                     Event.TranslateMessage(ref msg);
                     Event.DispatchMessage(ref msg);
                 }
             }
-
-            cts.Cancel();
-            HookManager.UnsubscribeWindowEvents();
         }
     }
 }

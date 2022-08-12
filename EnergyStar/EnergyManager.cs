@@ -1,5 +1,6 @@
 ﻿using EnergyStar.Interop;
 using System.Diagnostics;
+using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
 using System.Text;
 
@@ -14,6 +15,7 @@ namespace EnergyStar
             "devenv.exe",
 #endif
         };
+
         // Speical handling needs for UWP to get the child window process
         public const string UWPFrameHostApp = "ApplicationFrameHost.exe";
 
@@ -54,8 +56,9 @@ namespace EnergyStar
         private static void ToggleEfficiencyMode(IntPtr hProcess, bool enable)
         {
             Win32Api.SetProcessInformation(hProcess, Win32Api.PROCESS_INFORMATION_CLASS.ProcessPowerThrottling,
-                enable ? pThrottleOn : pThrottleOff, (uint)szControlBlock);
-            Win32Api.SetPriorityClass(hProcess, enable ? Win32Api.PriorityClass.IDLE_PRIORITY_CLASS : Win32Api.PriorityClass.NORMAL_PRIORITY_CLASS);
+                enable ? pThrottleOn : pThrottleOff, (uint) szControlBlock);
+            Win32Api.SetPriorityClass(hProcess,
+                enable ? Win32Api.PriorityClass.IDLE_PRIORITY_CLASS : Win32Api.PriorityClass.NORMAL_PRIORITY_CLASS);
         }
 
         private static string GetProcessNameFromHandle(IntPtr hProcess)
@@ -78,7 +81,8 @@ namespace EnergyStar
             if (windowThreadId == 0 || procId == 0) return;
 
             var procHandle = Win32Api.OpenProcess(
-                (uint)(Win32Api.ProcessAccessFlags.QueryLimitedInformation | Win32Api.ProcessAccessFlags.SetInformation), false, procId);
+                (uint) (Win32Api.ProcessAccessFlags.QueryLimitedInformation |
+                        Win32Api.ProcessAccessFlags.SetInformation), false, procId);
             if (procHandle == IntPtr.Zero) return;
 
             // Get the process
@@ -95,8 +99,9 @@ namespace EnergyStar
                     {
                         if (procId == innerProcId) return true;
 
-                        var innerProcHandle = Win32Api.OpenProcess((uint)(Win32Api.ProcessAccessFlags.QueryLimitedInformation |
-                            Win32Api.ProcessAccessFlags.SetInformation), false, innerProcId);
+                        var innerProcHandle = Win32Api.OpenProcess(
+                            (uint) (Win32Api.ProcessAccessFlags.QueryLimitedInformation |
+                                    Win32Api.ProcessAccessFlags.SetInformation), false, innerProcId);
                         if (innerProcHandle == IntPtr.Zero) return true;
 
                         // Found. Set flag, reinitialize handles and call it a day
@@ -115,15 +120,43 @@ namespace EnergyStar
             var bypass = BypassProcessList.Contains(appName.ToLowerInvariant());
             if (!bypass)
             {
-                Console.WriteLine($"Boost {appName}");
-                ToggleEfficiencyMode(procHandle, false);
+                var currentHandle = procHandle;
+                var currentName = appName;
+                var currentSessionId = Process.GetCurrentProcess().SessionId;
+                var runningProcesses = Process.GetProcesses().Where(p => p.SessionId == currentSessionId).ToDictionary(p => p.Id, p => p.ProcessName);
+                do
+                {
+                    ToggleEfficiencyMode(currentHandle, false);
+                    Console.WriteLine($"Boost {currentName}");
+
+                    if (currentHandle != procHandle) Win32Api.CloseHandle(currentHandle);
+                    
+                    var status = Win32Api.NtQueryInformationProcess(currentHandle, 0, out var processInformation,
+                        Unsafe.SizeOf<Win32Api.ParentProcessUtilities>(), out _);
+                    if (status != 0 ||
+                        processInformation.InheritedFromUniqueProcessId == IntPtr.Zero ||
+                        runningProcesses.ContainsKey((int) processInformation.InheritedFromUniqueProcessId) == false)
+                        break;
+                    
+                    currentHandle = Win32Api.OpenProcess(
+                        (uint) (Win32Api.ProcessAccessFlags.QueryLimitedInformation |
+                                Win32Api.ProcessAccessFlags.SetInformation), false, (uint)processInformation.InheritedFromUniqueProcessId);
+
+                    currentName = GetProcessNameFromHandle(currentHandle);
+                    if (BypassProcessList.Contains(currentName.ToLowerInvariant()))
+                    {
+                        break;
+                    }
+                    
+                } while (true);
             }
 
             if (pendingProcPid != 0)
             {
                 Console.WriteLine($"Throttle {pendingProcName}");
 
-                var prevProcHandle = Win32Api.OpenProcess((uint)Win32Api.ProcessAccessFlags.SetInformation, false, pendingProcPid);
+                var prevProcHandle = Win32Api.OpenProcess((uint) Win32Api.ProcessAccessFlags.SetInformation, false,
+                    pendingProcPid);
                 if (prevProcHandle != IntPtr.Zero)
                 {
                     ToggleEfficiencyMode(prevProcHandle, true);
@@ -145,15 +178,69 @@ namespace EnergyStar
         public static void ThrottleAllUserBackgroundProcesses()
         {
             var runningProcesses = Process.GetProcesses();
-            var currentSessionID = Process.GetCurrentProcess().SessionId;
+            var currentSessionId = Process.GetCurrentProcess().SessionId;
 
-            var sameAsThisSession = runningProcesses.Where(p => p.SessionId == currentSessionID);
-            foreach (var proc in sameAsThisSession)
+            var sameAsThisSession = runningProcesses.Where(p => p.SessionId == currentSessionId).ToDictionary(p => (uint)p.Id, p => p);
+            foreach (var (_, proc) in sameAsThisSession)
             {
                 if (proc.Id == pendingProcPid) continue;
+                var processNameLower = $"{proc.ProcessName}.exe".ToLowerInvariant();
+                if (BypassProcessList.Contains(processNameLower)) continue;
+                var hProcess = Win32Api.OpenProcess(
+                    (uint) (Win32Api.ProcessAccessFlags.SetInformation | Win32Api.ProcessAccessFlags.QueryInformation),
+                    false, (uint) proc.Id);
+
+                var needToggle = true;
+                var parentProcesses = GetParentProcessNames(hProcess);
+                foreach (var (parentProcId, parentProcName) in parentProcesses)
+                {
+                    if (parentProcId == pendingProcPid || BypassProcessList.Contains(parentProcName))
+                    {
+                        needToggle = false;
+                        break;
+                    }
+
+                    if (sameAsThisSession.ContainsKey(parentProcId) == false)
+                    {
+                        break;
+                    }
+                }
+
+                if (needToggle)
+                {
+                    ToggleEfficiencyMode(hProcess, true);    
+                }
+                
+                Win32Api.CloseHandle(hProcess);
+            }
+        }
+
+        public static IEnumerable<(uint ProcessId, string ProcessName)> GetParentProcessNames(IntPtr hProcess)
+        {
+            var current = hProcess;
+            do
+            {
+                var status = Win32Api.NtQueryInformationProcess(current, 0, out var processInformation,
+                    Unsafe.SizeOf<Win32Api.ParentProcessUtilities>(), out _);
+                if (current != hProcess) Win32Api.CloseHandle(current);
+                if (status != 0 || processInformation.InheritedFromUniqueProcessId == IntPtr.Zero) break;
+                current = Win32Api.OpenProcess((uint) Win32Api.ProcessAccessFlags.QueryInformation,
+                    false, (uint) processInformation.InheritedFromUniqueProcessId);
+                yield return ((uint)processInformation.InheritedFromUniqueProcessId, GetProcessNameFromHandle(current));
+            } while (true);
+        }
+        
+        public static void RecoverAllUserProcesses()
+        {
+            var runningProcesses = Process.GetProcesses();
+            var currentSessionId = Process.GetCurrentProcess().SessionId;
+
+            var sameAsThisSession = runningProcesses.Where(p => p.SessionId == currentSessionId);
+            foreach (var proc in sameAsThisSession)
+            {
                 if (BypassProcessList.Contains($"{proc.ProcessName}.exe".ToLowerInvariant())) continue;
-                var hProcess = Win32Api.OpenProcess((uint)Win32Api.ProcessAccessFlags.SetInformation, false, (uint)proc.Id);
-                ToggleEfficiencyMode(hProcess, true);
+                var hProcess = Win32Api.OpenProcess((uint)Win32Api.ProcessAccessFlags.SetInformation, false, (uint) proc.Id);
+                ToggleEfficiencyMode(hProcess, false);
                 Win32Api.CloseHandle(hProcess);
             }
         }

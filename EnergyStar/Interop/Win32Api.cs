@@ -36,6 +36,9 @@ namespace EnergyStar.Interop
         // We don't need to bloat this app with WinForm/WPF to show a simple message box
         [DllImport("user32.dll")]
         public static extern int MessageBox(IntPtr hInstance, string lpText, string lpCaption, uint type);
+        
+        [DllImport("ntdll.dll")]
+        public static extern int NtQueryInformationProcess([In] IntPtr processHandle,[In]  int processInformationClass,out ParentProcessUtilities processInformation,[In] int processInformationLength, out int returnLength);
 
         // two message box releated constants
         public const int MB_OK = 0x00000000;
@@ -100,6 +103,18 @@ namespace EnergyStar.Interop
             public uint Version;
             public ProcessorPowerThrottlingFlags ControlMask;
             public ProcessorPowerThrottlingFlags StateMask;
+        }
+        
+        [StructLayout(LayoutKind.Sequential)]
+        public struct ParentProcessUtilities
+        {
+            // These members must match PROCESS_BASIC_INFORMATION
+            internal IntPtr Reserved1;
+            internal IntPtr PebBaseAddress;
+            internal IntPtr Reserved2_0;
+            internal IntPtr Reserved2_1;
+            internal IntPtr UniqueProcessId;
+            internal IntPtr InheritedFromUniqueProcessId;
         }
     }
 }

@@ -29,6 +29,7 @@
     "smss.exe",
     "svchost.exe",
     // WUDF
-    "WUDFRd.exe"
+    "WUDFRd.exe",
+    "rider64.exe"
   ]
 }
