@@ -16,6 +16,13 @@ namespace EnergyStar
 #endif
         };
 
+        public static readonly HashSet<string> ParentProcessIgnoreList = new HashSet<string>()
+        {
+            "wininit.exe",
+            "winlogon.exe",
+            "explorer.exe"
+        };
+
         // Speical handling needs for UWP to get the child window process
         public const string UWPFrameHostApp = "ApplicationFrameHost.exe";
 
@@ -194,7 +201,7 @@ namespace EnergyStar
                 var parentProcesses = GetParentProcessNames(hProcess);
                 foreach (var (parentProcId, parentProcName) in parentProcesses)
                 {
-                    if (parentProcId == pendingProcPid || BypassProcessList.Contains(parentProcName))
+                    if (parentProcId == pendingProcPid)
                     {
                         needToggle = false;
                         break;
@@ -202,6 +209,18 @@ namespace EnergyStar
 
                     if (sameAsThisSession.ContainsKey(parentProcId) == false)
                     {
+                        break;
+                    }
+
+                    if (ParentProcessIgnoreList.Contains(parentProcName))
+                    {
+                        needToggle = true;
+                        break;
+                    }
+
+                    if (BypassProcessList.Contains(parentProcName))
+                    {
+                        needToggle = false;
                         break;
                     }
                 }
