@@ -184,6 +184,14 @@ namespace EnergyStar
 
         public static void ThrottleAllUserBackgroundProcesses()
         {
+            // check config change
+            if (Settings.NeedReload())
+            {
+                var settings = Settings.Load();
+                RecoverAllUserProcesses();
+                BypassProcessList.UnionWith(settings.Exemptions.Select(x => x.ToLowerInvariant()));
+            }
+            
             var runningProcesses = Process.GetProcesses();
             var currentSessionId = Process.GetCurrentProcess().SessionId;
 

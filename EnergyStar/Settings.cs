@@ -7,7 +7,15 @@ namespace EnergyStar
 {
     internal class Settings
     {
-        public string[] Exemptions { get; set; } = new string[0];
+        public static DateTime LastWriteTime { get; private set; } = DateTime.MinValue;
+        
+        public string[] Exemptions { get; set; } = Array.Empty<string>();
+
+        public static bool NeedReload()
+        {
+            var fileLastWriteTime = File.GetLastWriteTime(Path);
+            return LastWriteTime < fileLastWriteTime;
+        }
 
         public static Settings Load()
         {
@@ -20,7 +28,8 @@ namespace EnergyStar
             };
             try
             {
-                string path = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "settings.json");
+                var path = Path;
+                LastWriteTime = File.GetLastWriteTime(path);
                 string json = File.ReadAllText(path);
                 return JsonSerializer.Deserialize(json,
                     new SettingsJsonContext(options).Settings)!;
@@ -54,6 +63,15 @@ namespace EnergyStar
                 Environment.Exit(1);
             }
             throw new InvalidOperationException("Unreachable code");
+        }
+
+        private static string Path
+        {
+            get
+            {
+                var path = System.IO.Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "settings.json");
+                return path;
+            }
         }
     }
 
